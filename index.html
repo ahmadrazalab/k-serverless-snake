@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Snake Game on Kubernetes</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
+    <style>
+        canvas { background: #eee; display: block; margin: 20px auto; }
+        button { margin: 10px; padding: 10px; font-size: 16px; }
+        #status { text-align: center; font-size: 18px; }
+    </style>
+</head>
+<body>
+    <h1 align="center">Snake Game on Kubernetes</h1>
+    <div align="center">
+        <button onclick="startGame()">Start Game</button>
+        <button onclick="resetGame()">Destroy All Pods & Restart</button>
+        <p id="status">Press "Start Game" to begin.</p>
+    </div>
+    <canvas id="gameCanvas" width="400" height="400"></canvas>
+
+    <script>
+        let socket = io.connect("http://localhost:8000");
+        let direction = 'RIGHT';
+        let gameRunning = false;
+
+        document.addEventListener("keydown", function(event) {
+            if (!gameRunning) return;
+            if (event.key === "ArrowUp") direction = 'UP';
+            else if (event.key === "ArrowDown") direction = 'DOWN';
+            else if (event.key === "ArrowLeft") direction = 'LEFT';
+            else if (event.key === "ArrowRight") direction = 'RIGHT';
+            socket.emit("move", { direction });
+        });
+
+        function startGame() {
+            socket.emit("start_game");
+            document.getElementById("status").innerText = "Game Running! Use arrow keys to move.";
+            gameRunning = true;
+            setInterval(() => socket.emit("game_loop"), 300);
+        }
+
+        function drawGame(state) {
+            let canvas = document.getElementById("gameCanvas");
+            let ctx = canvas.getContext("2d");
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            ctx.fillStyle = "green";
+            state.snake.forEach(([x, y]) => {
+                ctx.fillRect(x * 20, y * 20, 20, 20);
+            });
+
+            ctx.fillStyle = "red";
+            let [fx, fy] = state.food;
+            ctx.fillRect(fx * 20, fy * 20, 20, 20);
+
+            document.getElementById("status").innerText = `Snake Length: ${state.snake.length} | Pods: ${state.pods.length}`;
+        }
+
+        socket.on("update", function(state) { drawGame(state); });
+        socket.on("game_over", function() { document.getElementById("status").innerText = "Game Over!"; gameRunning = false; });
+
+        function resetGame() { fetch("/reset", { method: "POST" }).then(() => location.reload()); }
+    </script>
+</body>
+</html>

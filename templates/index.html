@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Snake Pod Game 🐍</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            text-align: center;
+            background-color: #121212;
+            color: white;
+        }
+        h1 {
+            color: #4CAF50;
+        }
+        #gameCanvas {
+            border: 2px solid white;
+            background-color: black;
+            display: block;
+            margin: 10px auto;
+        }
+        #info {
+            margin-top: 10px;
+            font-size: 18px;
+            padding: 10px;
+            background: #222;
+            display: inline-block;
+            border-radius: 5px;
+        }
+        .btn {
+            margin-top: 10px;
+            padding: 10px 20px;
+            font-size: 18px;
+            background: #4CAF50;
+            color: white;
+            border: none;
+            cursor: pointer;
+            border-radius: 5px;
+        }
+        .btn:hover {
+            background: #45a049;
+        }
+    </style>
+</head>
+<body>
+    <h1>Snake Pod Game 🐍</h1>
+    <button class="btn" onclick="startGame()">Start Game</button>
+    <canvas id="gameCanvas" width="800" height="800"></canvas>
+    <div id="info">Press "Start Game" to begin!</div>
+
+    <script>
+        let socket = io.connect("http://localhost:8000");
+        let sessionId = null;
+        let direction = "RIGHT";
+        let gameRunning = false;
+        let ctx = document.getElementById("gameCanvas").getContext("2d");
+        const GRID_SIZE = 40;
+        const CELL_SIZE = 20;
+
+        function startGame() {
+            socket.emit("start_game");
+            gameRunning = true;
+        }
+
+        document.addEventListener("keydown", function (event) {
+            if (!gameRunning) return;
+
+            const keyMap = {
+                ArrowUp: "UP",
+                ArrowDown: "DOWN",
+                ArrowLeft: "LEFT",
+                ArrowRight: "RIGHT",
+            };
+
+            if (keyMap[event.key]) {
+                let newDirection = keyMap[event.key];
+                socket.emit("change_direction", { session_id: sessionId, direction: newDirection });
+            }
+        });
+
+        function drawGame(state) {
+            ctx.clearRect(0, 0, 800, 800);
+            ctx.fillStyle = "green";
+            state.snake.forEach(([x, y]) => ctx.fillRect(x * CELL_SIZE, y * CELL_SIZE, CELL_SIZE, CELL_SIZE));
+            ctx.fillStyle = "red";
+            state.food.forEach(([x, y]) => ctx.fillRect(x * CELL_SIZE, y * CELL_SIZE, CELL_SIZE, CELL_SIZE));
+
+            document.getElementById("info").innerHTML = `
+                <b>Session ID:</b> ${state.session_id}<br>
+                <b>Deployment:</b> ${state.deployment}<br>
+                <b>Pods Eaten:</b> ${state.score}
+            `;
+        }
+
+        socket.on("session_started", function (data) {
+            sessionId = data.session_id;
+            drawGame(data);
+            setInterval(() => socket.emit("game_loop", { session_id: sessionId, direction }), 150);
+        });
+
+        socket.on("update", function (state) {
+            drawGame(state);
+        });
+
+        socket.on("game_over", function () {
+            document.getElementById("info").innerHTML += "<br><b>Game Over!</b>";
+            gameRunning = false;
+        });
+    </script>
+</body>
+</html>
