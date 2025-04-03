@@ -8,7 +8,16 @@ import uuid
 app = Flask(__name__, static_folder="static", template_folder="templates")
 socketio = SocketIO(app, cors_allowed_origins="*")
 
-redis_client = redis.StrictRedis(host="localhost", port=6379, decode_responses=True)
+# redis_client = redis.StrictRedis(host="mint-alien-56744.upstash.io", port=6379, decode_responses=True)
+redis_client = redis.StrictRedis(
+    host="mint-alien-56744.upstash.io",
+    port=6379,
+    password="Ad2oAAIjcDFhZjkyNTcyYWQ1ODM0MTkzODBkMWUzMDA4NGQwZDA4M3AxMA",  # Fetch from environment variables
+    ssl=True,  # Enable SSL/TLS
+    decode_responses=True
+)
+
+
 sessions = {}
 
 GRID_SIZE = 30  # Bigger game box
