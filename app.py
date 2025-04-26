@@ -1,27 +1,26 @@
-from flask import Flask, render_template
-from flask_socketio import SocketIO, emit
+from flask import Flask, render_template, request
+from flask_socketio import SocketIO, emit, join_room, leave_room
 import redis
 import random
 import os
 import uuid
+import json
 
 app = Flask(__name__, static_folder="static", template_folder="templates")
 socketio = SocketIO(app, cors_allowed_origins="*")
 
-# redis_client = redis.StrictRedis(host="mint-alien-56744.upstash.io", port=6379, decode_responses=True)
+# Secure Redis Connection
 redis_client = redis.StrictRedis(
     host="mint-alien-56744.upstash.io",
     port=6379,
-    password="Ad2oAAIjcDFhZjkyNTcyYWQ1ODM0MTkzODBkMWUzMDA4NGQwZDA4M3AxMA",  # Fetch from environment variables
-    ssl=True,  # Enable SSL/TLS
+    password="Ad2oAAIjcDFhZjkyNTcyYWQ1ODM0MTkzODBkMWUzMDA4NGQwZDA4M3AxMA",  # Store this in env variables
+    ssl=True,
     decode_responses=True
 )
 
+GRID_SIZE = 30  # Game Grid Size
 
-sessions = {}
-
-GRID_SIZE = 30  # Bigger game box
-
+# --- Utility Functions ---
 def spawn_food(existing_food):
     """Ensure 5 food pods exist in unique locations."""
     while len(existing_food) < 5:
@@ -30,99 +29,120 @@ def spawn_food(existing_food):
             existing_food.append(new_food)
     return existing_food
 
+def save_session(session_id, data):
+    """Store session data in Redis."""
+    redis_client.set(f"session:{session_id}", json.dumps(data))
+
+def load_session(session_id):
+    """Load session data from Redis."""
+    session_data = redis_client.get(f"session:{session_id}")
+    return json.loads(session_data) if session_data else None
+
+# --- Routes ---
 @app.route("/")
 def index():
     return render_template("index.html")
 
+# --- Game Logic ---
 @socketio.on("start_game")
 def start_game():
-    session_id = str(uuid.uuid4())
+    session_id = str(uuid.uuid4())  # Unique session ID per user
     deployment_name = f"snake-deploy-{session_id[:8]}"
-    
-    sessions[session_id] = {
+
+    session_data = {
         "snake": [(GRID_SIZE // 2, GRID_SIZE // 2)],  
         "food": spawn_food([]),  
-        "direction": "RIGHT",  # Default direction
+        "direction": "RIGHT",
         "running": True,
         "score": 0,
         "deployment": deployment_name
     }
 
+    save_session(session_id, session_data)
     redis_client.set(f"deployment:{session_id}", deployment_name)
+
     create_deployment(deployment_name, replicas=1)
+
+    join_room(session_id)  # Make user join their own room
 
     emit("session_started", {
         "session_id": session_id,
         "deployment": deployment_name,
-        "snake": sessions[session_id]["snake"], 
-        "food": sessions[session_id]["food"],
+        "snake": session_data["snake"], 
+        "food": session_data["food"],
         "score": 0
-    })
+    }, room=session_id)  # Send only to this user
 
-@socketio.on("change_direction")  # 🛠 Fix: Handling Direction Change
+@socketio.on("change_direction")
 def change_direction(data):
     session_id = data.get("session_id")
     new_direction = data.get("direction")
 
-    if session_id in sessions and new_direction:
-        sessions[session_id]["direction"] = new_direction
+    session_data = load_session(session_id)
+    if session_data and new_direction:
+        session_data["direction"] = new_direction
+        save_session(session_id, session_data)
 
 @socketio.on("game_loop")
 def game_loop(data):
-    session_id = data["session_id"]
-    if session_id not in sessions:
+    session_id = data.get("session_id")
+    session_data = load_session(session_id)
+
+    if not session_data or not session_data["running"]:
         return
 
-    game = sessions[session_id]
-    if not game["running"]:
+    head_x, head_y = session_data["snake"][-1]
+
+    if session_data["direction"] == "UP": head_y -= 1
+    elif session_data["direction"] == "DOWN": head_y += 1
+    elif session_data["direction"] == "LEFT": head_x -= 1
+    elif session_data["direction"] == "RIGHT": head_x += 1
+
+    # Check for collisions
+    if head_x < 0 or head_x >= GRID_SIZE or head_y < 0 or head_y >= GRID_SIZE or (head_x, head_y) in session_data["snake"]:
+        session_data["running"] = False
+        save_session(session_id, session_data)
+        emit("game_over", {"session_id": session_id}, room=session_id)  # Send to this user only
         return
 
-    head_x, head_y = game["snake"][-1]
-
-    if game["direction"] == "UP": head_y -= 1
-    elif game["direction"] == "DOWN": head_y += 1
-    elif game["direction"] == "LEFT": head_x -= 1
-    elif game["direction"] == "RIGHT": head_x += 1
-
-    # Check collision with walls or itself
-    if head_x < 0 or head_x >= GRID_SIZE or head_y < 0 or head_y >= GRID_SIZE or (head_x, head_y) in game["snake"]:
-        game["running"] = False
-        emit("game_over", {"session_id": session_id})
-        return
-
-    game["snake"].append((head_x, head_y))
+    session_data["snake"].append((head_x, head_y))
 
     # Check if snake eats food
-    if (head_x, head_y) in game["food"]:
-        game["food"].remove((head_x, head_y))
-        game["food"] = spawn_food(game["food"])  
-        game["score"] += 1
+    if (head_x, head_y) in session_data["food"]:
+        session_data["food"].remove((head_x, head_y))
+        session_data["food"] = spawn_food(session_data["food"])  
+        session_data["score"] += 1
 
         deployment_name = redis_client.get(f"deployment:{session_id}")
         if deployment_name:
-            new_replicas = game["score"]
+            new_replicas = session_data["score"]
             scale_deployment(deployment_name, new_replicas)
     else:
-        game["snake"].pop(0)  # Move forward
+        session_data["snake"].pop(0)  # Move forward
+
+    save_session(session_id, session_data)
 
     emit("update", {
         "session_id": session_id, 
-        "snake": game["snake"], 
-        "food": game["food"],
-        "score": game["score"],
-        "deployment": game["deployment"]
-    }, broadcast=True)
+        "snake": session_data["snake"], 
+        "food": session_data["food"],
+        "score": session_data["score"],
+        "deployment": session_data["deployment"]
+    }, room=session_id)  # Send only to this session
 
 @socketio.on("disconnect")
 def handle_disconnect():
-    for session_id in list(sessions.keys()):
-        deployment_name = redis_client.get(f"deployment:{session_id}")
-        if deployment_name:
-            os.system(f"kubectl delete deployment {deployment_name} --force --grace-period=0")
-            redis_client.delete(f"deployment:{session_id}")
+    session_id = request.sid  # Use user socket ID
+    leave_room(session_id)  # Remove user from room
 
-        del sessions[session_id]
+    deployment_name = redis_client.get(f"deployment:{session_id}")
+    if deployment_name:
+        os.system(f"kubectl delete deployment {deployment_name} --force --grace-period=0")
+        redis_client.delete(f"deployment:{session_id}")
 
+    redis_client.delete(f"session:{session_id}")
+
+# --- Deployment Management ---
 def create_deployment(deployment_name, replicas):
     deployment_yaml = f"""
 apiVersion: apps/v1
